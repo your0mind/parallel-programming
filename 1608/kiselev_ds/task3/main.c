@@ -1,4 +1,4 @@
-#include <stdio.h>
+#include <stdio.h> 
 #include <stdlib.h>
 #include <math.h>
 #include "mpi.h"
@@ -35,10 +35,23 @@ void qsort_by_digit_place(int *v, int left, int right, int digit_number) {
 	qsort_by_digit_place(v, last + 1, right, digit_number);
 }
 
+int* bond_arrs_by_digit_place(int *arr1, int size1, int *arr2, int size2, int digit_number) {
+	int size = size1 + size2;
+	int *arr = (int*)malloc(sizeof(int) * size);
+	for (int i = 0, i1 = 0, i2 = 0; i < size; i++) {
+		if (get_digit_place(arr1[i1], digit_number) <= get_digit_place(arr2[i1], digit_number))
+			arr[i] = arr1[i1++];
+		else
+			arr[i] = arr2[i2++];
+	}
+	return arr;
+}
+
 int main(int argc, char *argv[]) {
 	int proc_num, proc_rank;
 	int size;
-	int *arr;
+	int *src_arr, *arr, *mate_arr;
+	MPI_Status status;
 
 	MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD, &proc_num);
@@ -47,36 +60,44 @@ int main(int argc, char *argv[]) {
 	if (proc_rank == 0) {
 		size = atoi(argv[1]);
 		srand(time(NULL));
-		arr = generate_arr(size, atoi(argv[2]), atoi(argv[3]));
+		src_arr = generate_arr(size, atoi(argv[2]), atoi(argv[3]));
 	}
 
 	MPI_Bcast(&size, 1, MPI_INT, 0, MPI_COMM_WORLD);
 	int div_size = size / proc_num;
 	int rest_size = size - proc_num * div_size;
-	int stages = 0;
-	for (int num = proc_num; num > 1; num >>= 1, stages++)
-		;
 
 	for (int digit_num = 1; digit_num <= NUMBER_OF_INT_DIGITS; digit_num++) {
+		int cur_size;
 		if (proc_rank == 0) {
+			cur_size = rest_size;
 			for (int proc = 1; proc < proc_num; proc++)
-				MPI_Send(&arr[(proc - 1)* div_size], div_size, MPI_INT, proc, 0, MPI_COMM_WORLD);
-			qsort_by_digit_place(&arr[size - rest_size], 0, rest_size - 1, digit_num);
+				MPI_Send(&src_arr[(proc - 1) * div_size], div_size, MPI_INT, proc, 0, MPI_COMM_WORLD);
+			arr = (int*)malloc(sizeof(int) * cur_size);
+			memcpy(&src_arr[size - rest_size], arr, cur_size);
+			free(src_arr);
 		}
 		else {
-			arr = (int*)malloc(sizeof(int) * div_size);
-			MPI_Status status;
-			MPI_Recv(arr, div_size, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-			qsort_by_digit_place(arr, 0, div_size - 1, digit_num);
+			cur_size = div_size;
+			arr = (int*)malloc(sizeof(int) * cur_size);
+			MPI_Recv(arr, cur_size, MPI_INT, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 		}
+		qsort_by_digit_place(arr, 0, cur_size - 1, digit_num);
 
 		for (int step = 1; step < proc_num; step <<= 1) {
+			int mate_size = div_size * step;
 			if ((proc_rank - step) % (step * 2) == 0) {
-				// Then send
+				MPI_Send(arr, mate_size, MPI_INT, proc_rank - step, 0, MPI_COMM_WORLD);
 			}
-			else if (proc_rank % (step * 2)) {
-				// Then recv
+			else if (proc_rank % (step * 2) == 0) {
+				mate_arr = (int*)mallpc(sizeof(int) * mate_size);
+				MPI_Recv(mate_arr, mate_size, MPI_INT, proc_rank + step, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+				int *temp = arr;
+				arr = bond_arrs_by_digit_place(arr, cur_size, mate_arr, mate_size, digit_num);
+				free(temp);
 			}
+			else
+				free(arr);
 		}
 	}
 
