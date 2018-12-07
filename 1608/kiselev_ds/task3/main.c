@@ -70,8 +70,13 @@ int main(int argc, char *argv[]) {
 			qsort_by_digit_place(arr, 0, div_size - 1, digit_num);
 		}
 
-		for (int i = 0; i < stages; i++) {
-
+		for (int step = 1; step < proc_num; step <<= 1) {
+			if ((proc_rank - step) % (step * 2) == 0) {
+				// Then send
+			}
+			else if (proc_rank % (step * 2)) {
+				// Then recv
+			}
 		}
 	}
 
