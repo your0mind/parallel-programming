@@ -35,15 +35,20 @@ void qsort_by_digit_place(int *v, int left, int right, int digit_number) {
 	qsort_by_digit_place(v, last + 1, right, digit_number);
 }
 
-int* bond_arrs_by_digit_place(int *arr1, int size1, int *arr2, int size2, int digit_number) {
+int* merge_by_digit_place(int *arr1, int size1, int *arr2, int size2, int digit_number) {
 	int size = size1 + size2;
 	int *arr = (int*)malloc(sizeof(int) * size);
-	for (int i = 0, i1 = 0, i2 = 0; i < size; i++) {
-		if (get_digit_place(arr1[i1], digit_number) <= get_digit_place(arr2[i1], digit_number))
-			arr[i] = arr1[i1++];
+	int i = 0, i1 = 0, i2 = 0;
+	while ((i1 < size1) && (i2 < size2)) {
+		if (get_digit_place(arr1[i1], digit_number) <= get_digit_place(arr2[i2], digit_number))
+			arr[i++] = arr1[i1++];
 		else
-			arr[i] = arr2[i2++];
+			arr[i++] = arr2[i2++];
 	}
+	if (i1 < size1)
+		memcpy(&arr[i], &arr1[i1], (size - i) * sizeof(int));
+	else if (i2 < size2)
+		memcpy(&arr[i], &arr2[i2], (size - i) * sizeof(int));
 	return arr;
 }
 
@@ -74,7 +79,7 @@ int main(int argc, char *argv[]) {
 			for (int proc = 1; proc < proc_num; proc++)
 				MPI_Send(&src_arr[(proc - 1) * div_size], div_size, MPI_INT, proc, 0, MPI_COMM_WORLD);
 			arr = (int*)malloc(sizeof(int) * cur_size);
-			memcpy(&src_arr[size - rest_size], arr, cur_size);
+			memcpy(arr, &src_arr[size - rest_size], cur_size * sizeof(int));
 			free(src_arr);
 		}
 		else {
