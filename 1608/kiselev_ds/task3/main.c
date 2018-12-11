@@ -1,4 +1,6 @@
 // Lab3: bitwise sorting int numbers using merge sorting
+// The code works only for the number of processes
+// equal to the powers of two (2, 4, 8, ...)
 
 #include <stdio.h> 
 #include <stdlib.h>
@@ -127,7 +129,7 @@ int main(int argc, char *argv[]) {
 	MPI_Bcast(&max_digit_count, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
 	// The rest_size is needed to handle the
-	// case when vector_size % proc_num != 0
+	// case when size % proc_num != 0
 	int div_size = size / proc_num;
 	int rest_size = size - (proc_num - 1) * div_size;
 
