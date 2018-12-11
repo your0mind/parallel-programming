@@ -1,9 +1,10 @@
+// Lab2: Gauss–Jordan elimination
+
 #include <stdio.h>
 #include <math.h>
 #include "mpi.h"
 
 #define EPSILON 10e-7
-
 
 double* read_matrix(FILE* input, int x, int y) {
 	int vector_size = y * x;
@@ -85,18 +86,16 @@ int main(int argc, char *argv[]) {
 			proc_num_used[i] = (proc_num <= subm_h - 1) ? proc_num : subm_h - 1;
 			
 			// Swap rows if first element of sub-matrix is zero
-			if (fabs(matrix[diag_offset]) < EPSILON) {
+			if (fabs(matrix[diag_offset]) < EPSILON)
 				for (int j = i + 1; j < matrix_h; j++)
 					if (fabs(matrix[matrix_w * j + i]) >= EPSILON) {
 						swap_vectors(&matrix[matrix_w * j], &matrix[matrix_w * i], matrix_w);
 						break;
 					}
-			}
 
 			// Divide the row into itself if first element != 1
-			if (fabs(matrix[diag_offset] - 1) >= EPSILON) {
+			if (fabs(matrix[diag_offset] - 1) >= EPSILON)
 				divide_vector2value(&matrix[diag_offset], subm_w, matrix[diag_offset]);
-			}
 
 			// The rest size is needed to handle the case when matrix size % proc_num != 0
 			division_sizes[i] = (subm_h - 1) / proc_num_used[i];
@@ -129,11 +128,10 @@ int main(int argc, char *argv[]) {
 			// Processing own part of matrix
 			for (int j = 0; j < rest_sizes[i]; j++) {
 				double coef = matrix[diag_offset + (j + 1) * matrix_w];
-				if (fabs(coef) >= EPSILON) {
+				if (fabs(coef) >= EPSILON)
 					// Subtract from the current row the first row multiplied by first element
 					substract_vectors_with_coef(&matrix[diag_offset + (j + 1) * matrix_w],
 						&matrix[diag_offset], subm_w, coef);
-				}
 			}
 
 			// Getting updated matrix and release indexed types
@@ -150,9 +148,9 @@ int main(int argc, char *argv[]) {
 		matrix[diag_offset + 1] /= matrix[diag_offset];
 		matrix[diag_offset] = 1.0;
 
-		printf("\nForward elimination's result:\n");
-		print_matrix(matrix, matrix_w, matrix_h);
-		printf("\n\n");
+		//printf("\nForward elimination's result:\n");
+		//print_matrix(matrix, matrix_w, matrix_h);
+		//printf("\n\n");
 
 		// Back substitution
 		int pivot_elem_offset = matrix_h * matrix_w - 1;
@@ -169,8 +167,8 @@ int main(int argc, char *argv[]) {
 
 			for (int proc = 1; proc < proc_num_used[i]; proc++) {
 				for (int j = 0; j < elems_in_type - 1; j += 2) {
-					displacement[j] = (matrix_w - i - 2) + (proc - 1 + (j >> 1)) * matrix_w;
-					displacement[j + 1] = (matrix_w - 1) + (proc - 1 + (j >> 1)) * matrix_w;
+					displacement[j] = (matrix_w - i - 2 + division_sizes[i] * matrix_w * (proc - 1)) + ((j >> 1)) * matrix_w;
+					displacement[j + 1] = displacement[j] + i + 1;
 				}
 				MPI_Type_indexed(elems_in_type, blocklen, displacement, MPI_DOUBLE, &indexed_types[proc - 1]);
 				MPI_Type_commit(&indexed_types[proc - 1]);
@@ -180,7 +178,7 @@ int main(int argc, char *argv[]) {
 			int start_of_col = pivot_elem_offset - matrix_w * rest_sizes[i];
 			for (int k = 0; k < rest_sizes[i]; k++, start_of_col += matrix_w) {
 				matrix[start_of_col] -= matrix[pivot_elem_offset] * matrix[start_of_col - (i + 1)];
-				matrix[start_of_col - (i + 1)] = 0.0;
+				//matrix[start_of_col - (i + 1)] = 0.0;
 			}
 
 			for (int proc = 1; proc < proc_num_used[i]; proc++) {
@@ -193,9 +191,14 @@ int main(int argc, char *argv[]) {
 			free(indexed_types);
 		}
 
-		printf("\nBack substitution's result:\n");
-		print_matrix(matrix, matrix_w, matrix_h);
-		printf("\n\n");
+		//printf("\nBack substitution's result:\n");
+		//print_matrix(matrix, matrix_w, matrix_h);
+		//printf("\n\n");
+
+		FILE* output_file = fopen(argv[2], "w");
+		for (int i = 0; i < matrix_h; i++)
+			fprintf(output_file, "%lf\n", matrix[(matrix_w - 1) + matrix_w * i]);
+		fclose(output_file);
 	}
 	else {
 		// Getting the size of source matrix
@@ -241,9 +244,8 @@ int main(int argc, char *argv[]) {
 
 			for (int k = 0; k < division_sizes[i]; k++) {
 				double coef = matrix[displacement[k + 1]];
-				if (fabs(coef) >= EPSILON) {
+				if (fabs(coef) >= EPSILON)
 					substract_vectors_with_coef(&matrix[displacement[k + 1]], &matrix[displacement[0]], subm_w, coef);
-				}
 			}
 
 			MPI_Send(matrix, 1, indexed_type, 0, 0, MPI_COMM_WORLD);
@@ -263,8 +265,8 @@ int main(int argc, char *argv[]) {
 			blocklen[elems_in_type - 1] = 1;
 			for (int j = 0; j < elems_in_type - 1; j += 2) {
 				blocklen[j] = blocklen[j + 1] = 1;
-				displacement[j] = (matrix_w - i - 2) + (proc_rank - 1 + (j >> 1)) * matrix_w;
-				displacement[j + 1] = (matrix_w - 1) + (proc_rank - 1 + (j >> 1)) * matrix_w;
+				displacement[j] = (matrix_w - i - 2 + division_sizes[i] * matrix_w * (proc_rank - 1)) + ((j >> 1)) * matrix_w;
+				displacement[j + 1] = displacement[j] + i + 1;
 			}
 			MPI_Type_indexed(elems_in_type, blocklen, displacement, MPI_DOUBLE, &indexed_type);
 			MPI_Type_commit(&indexed_type);
@@ -272,7 +274,7 @@ int main(int argc, char *argv[]) {
 
 			for (int k = 0; k < elems_in_type - 1; k += 2) {
 				matrix[displacement[k + 1]] -= matrix[displacement[k]] * matrix[pivot_elem_offset];
-				matrix[displacement[k]] = 0.0;
+				//matrix[displacement[k]] = 0.0;
 			}
 
 			MPI_Send(matrix, 1, indexed_type, 0, 0, MPI_COMM_WORLD);
