@@ -92,10 +92,8 @@ int main(int argc, char *argv[]) {
 
 		double *matrix_copy = (double*)malloc(sizeof(double) * matrix_h * matrix_w);
 		memcpy(matrix_copy, matrix, matrix_h * matrix_w * sizeof(double));
-	start:
-		if (matrix == NULL)
-			matrix = matrix_copy;
-
+		
+		// Sequential algorithm
 		start_time = MPI_Wtime();
 
 		subm_h = matrix_h;
@@ -131,17 +129,8 @@ int main(int argc, char *argv[]) {
 				matrix_copy[start_of_col] -= matrix_copy[pivot_elem_offset] * matrix_copy[start_of_col - (i + 1)];
 			}
 		}
-
 		end_time = MPI_Wtime();
-		printf("Sequential %f sec\n", end_time - start_time);
-		FILE* output_file = fopen("output.txt", "w");
-		for (int i = 0; i < matrix_h; i++)
-			fprintf(output_file, "%lf\n", matrix_copy[(matrix_w - 1) + matrix_w * i]);
-		fclose(output_file);
-
-		//printf("\nBack substitution's result:\n");
-		//print_matrix(matrix_copy, matrix_w, matrix_h);
-		//printf("\n\n");
+		double sequential_time = end_time - start_time;
 
 		// Parallel algorithm
 		start_time = MPI_Wtime();
@@ -282,15 +271,18 @@ int main(int argc, char *argv[]) {
 		}
 
 		end_time = MPI_Wtime();
-		printf("Parallel: %f sec\n", end_time - start_time);
+		double parallel_time = end_time - start_time;
 		
+		printf("Parallel alg: %f sec\n", parallel_time);
+		printf("Sequential alg: %f sec\n", sequential_time);
 		int successful_validation = 1;
 		for (int last_elem = matrix_w - 1; last_elem < matrix_h * matrix_w; last_elem += matrix_w)
-			if (fabs(matrix_copy[last_elem] - matrix[last_elem]) > EPSILON)
+			if (fabs(matrix[last_elem] - matrix_copy[last_elem]) > EPSILON)
 				successful_validation = 0;
 		(successful_validation)
 			? printf("SUCCESSFUL VALIDATION CHECK\n")
 			: printf("UNSUCCESSFUL VALIDATION CHECK\n");
+		free(matrix_copy);
 	}
 	else {
 		// Getting the size of source matrix
@@ -380,7 +372,6 @@ int main(int argc, char *argv[]) {
 	free(rest_sizes);
 	free(proc_num_used);
 	free(matrix);
-	free(matrix_copy);
 	MPI_Finalize();
 	return 0;
 }
