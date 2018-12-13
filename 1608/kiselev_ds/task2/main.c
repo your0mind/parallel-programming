@@ -6,6 +6,19 @@
 
 #define EPSILON 10e-7
 
+double* generate_simple_matrix(int height, int width) {
+	double *matrix = (double*)malloc(sizeof(double) * height * width);
+	for (int y = 0; y < height; y++)
+		for (int x = 0; x < width; x++)
+			if (y == x)
+				matrix[y * width + x] = 2.0;
+			else if (x == height)
+				matrix[y * width + x] = height + 1.0;
+			else
+				matrix[y * width + x] = 1.0;
+	return matrix;
+}
+
 double* read_matrix(FILE* input, int x, int y) {
 	int vector_size = y * x;
 	double* matrix = (double*)malloc(sizeof(double) * vector_size);
@@ -60,16 +73,25 @@ int main(int argc, char *argv[]) {
 	MPI_Comm_rank(MPI_COMM_WORLD, &proc_rank);
 
 	if (proc_rank == 0) {
-		FILE* input_file = fopen(argv[1], "r");
-		fscanf(input_file, "%d", &matrix_h);
+		if (argc == 3) {
+			FILE* input_file = fopen(argv[1], "r");
+			fscanf(input_file, "%d", &matrix_h);
+			matrix_w = matrix_h + 1;
+
+			// Reading matrix from input file
+			matrix = read_matrix(input_file, matrix_h, matrix_w);
+			fclose(input_file);
+		}
+		else {
+			matrix_h = atoi(argv[1]);
+			matrix_w = matrix_h + 1;
+			matrix = generate_simple_matrix(matrix_h, matrix_w);
+		}
+
+		double start_time = MPI_Wtime();
 
 		// Sending matrix_size to all processes
 		MPI_Bcast(&matrix_h, 1, MPI_INT, 0, MPI_COMM_WORLD);
-		matrix_w = matrix_h + 1;
-
-		// Reading matrix from input file
-		matrix = read_matrix(input_file, matrix_h, matrix_w);
-		fclose(input_file);
 
 		division_sizes = (int*)malloc(sizeof(int) * (matrix_h - 1));
 		rest_sizes = (int*)malloc(sizeof(int) * (matrix_h - 1));
@@ -78,6 +100,7 @@ int main(int argc, char *argv[]) {
 		subm_h = matrix_h;
 		subm_w = matrix_w;
 		MPI_Datatype* indexed_types;
+
 		// Forward elimination steps
 		int diag_offset = 0;
 		for (int i = 0; i < matrix_h - 1; i++, subm_h--, subm_w--, diag_offset += matrix_w + 1) {
@@ -195,10 +218,14 @@ int main(int argc, char *argv[]) {
 		//print_matrix(matrix, matrix_w, matrix_h);
 		//printf("\n\n");
 
-		FILE* output_file = fopen(argv[2], "w");
-		for (int i = 0; i < matrix_h; i++)
-			fprintf(output_file, "%lf\n", matrix[(matrix_w - 1) + matrix_w * i]);
-		fclose(output_file);
+		if (argc == 3) {
+			FILE* output_file = fopen(argv[2], "w");
+			for (int i = 0; i < matrix_h; i++)
+				fprintf(output_file, "%lf\n", matrix[(matrix_w - 1) + matrix_w * i]);
+			fclose(output_file);
+		}
+
+		printf("Number of proc: %d\nTime: %f sec\n", proc_num, MPI_Wtime() - start_time);
 	}
 	else {
 		// Getting the size of source matrix
