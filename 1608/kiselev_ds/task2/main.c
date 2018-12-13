@@ -65,7 +65,8 @@ int main(int argc, char *argv[]) {
 	int matrix_h, matrix_w;
 	int subm_h, subm_w;
 	int elems_in_type;
-	double* matrix;
+	double *matrix;
+	double start_time, end_time;
 	MPI_Status status;
 
 	MPI_Init(&argc, &argv);
@@ -83,12 +84,67 @@ int main(int argc, char *argv[]) {
 			fclose(input_file);
 		}
 		else {
+			// Generatin simple matrix
 			matrix_h = atoi(argv[1]);
 			matrix_w = matrix_h + 1;
 			matrix = generate_simple_matrix(matrix_h, matrix_w);
 		}
 
-		double start_time = MPI_Wtime();
+		double *matrix_copy = (double*)malloc(sizeof(double) * matrix_h * matrix_w);
+		memcpy(matrix_copy, matrix, matrix_h * matrix_w * sizeof(double));
+	start:
+		if (matrix == NULL)
+			matrix = matrix_copy;
+
+		start_time = MPI_Wtime();
+
+		subm_h = matrix_h;
+		subm_w = matrix_w;
+		int diag_offset = 0;
+		for (int i = 0; i < matrix_h; i++, subm_h--, subm_w--, diag_offset += matrix_w + 1) {
+			if (fabs(matrix_copy[diag_offset]) < EPSILON)
+				for (int j = i + 1; j < matrix_h; j++)
+					if (fabs(matrix_copy[matrix_w * j + i]) >= EPSILON) {
+						swap_vectors(&matrix_copy[matrix_w * j], &matrix_copy[matrix_w * i], matrix_w);
+						break;
+					}
+
+			if (fabs(matrix_copy[diag_offset] - 1) >= EPSILON)
+				divide_vector2value(&matrix_copy[diag_offset], subm_w, matrix_copy[diag_offset]);
+
+			for (int j = 0; j < subm_h - 1; j++) {
+				double coef = matrix_copy[diag_offset + (j + 1) * matrix_w];
+				if (fabs(coef) >= EPSILON)
+					substract_vectors_with_coef(&matrix_copy[diag_offset + (j + 1) * matrix_w],
+						&matrix_copy[diag_offset], subm_w, coef);
+			}
+		}
+
+		//printf("\nForward elimination's result:\n");
+		//print_matrix(matrix_copy, matrix_w, matrix_h);
+		//printf("\n\n");
+
+		int pivot_elem_offset = matrix_h * matrix_w - 1;
+		for (int i = 0; i < matrix_h - 1; i++, pivot_elem_offset -= matrix_w) {
+			int start_of_col = matrix_w - 1;
+			for (int k = 0; k < matrix_h - i - 1; k++, start_of_col += matrix_w) {
+				matrix_copy[start_of_col] -= matrix_copy[pivot_elem_offset] * matrix_copy[start_of_col - (i + 1)];
+			}
+		}
+
+		end_time = MPI_Wtime();
+		printf("Sequential %f sec\n", end_time - start_time);
+		FILE* output_file = fopen("output.txt", "w");
+		for (int i = 0; i < matrix_h; i++)
+			fprintf(output_file, "%lf\n", matrix_copy[(matrix_w - 1) + matrix_w * i]);
+		fclose(output_file);
+
+		//printf("\nBack substitution's result:\n");
+		//print_matrix(matrix_copy, matrix_w, matrix_h);
+		//printf("\n\n");
+
+		// Parallel algorithm
+		start_time = MPI_Wtime();
 
 		// Sending matrix_size to all processes
 		MPI_Bcast(&matrix_h, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -102,7 +158,7 @@ int main(int argc, char *argv[]) {
 		MPI_Datatype* indexed_types;
 
 		// Forward elimination steps
-		int diag_offset = 0;
+		diag_offset = 0;
 		for (int i = 0; i < matrix_h - 1; i++, subm_h--, subm_w--, diag_offset += matrix_w + 1) {
 			diag_offset = matrix_w * i + i;
 			// Calculate the number of processes that we will use on the current iteration
@@ -176,7 +232,7 @@ int main(int argc, char *argv[]) {
 		//printf("\n\n");
 
 		// Back substitution
-		int pivot_elem_offset = matrix_h * matrix_w - 1;
+		pivot_elem_offset = matrix_h * matrix_w - 1;
 		for (int i = 0; i < matrix_h - 1; i++, pivot_elem_offset -= matrix_w) {
 			indexed_types = (MPI_Datatype*)malloc(sizeof(MPI_Datatype) * (proc_num_used[i] - 1));
 
@@ -225,7 +281,16 @@ int main(int argc, char *argv[]) {
 			fclose(output_file);
 		}
 
-		printf("Number of proc: %d\nTime: %f sec\n", proc_num, MPI_Wtime() - start_time);
+		end_time = MPI_Wtime();
+		printf("Parallel: %f sec\n", end_time - start_time);
+		
+		int successful_validation = 1;
+		for (int last_elem = matrix_w - 1; last_elem < matrix_h * matrix_w; last_elem += matrix_w)
+			if (fabs(matrix_copy[last_elem] - matrix[last_elem]) > EPSILON)
+				successful_validation = 0;
+		(successful_validation)
+			? printf("SUCCESSFUL VALIDATION CHECK\n")
+			: printf("UNSUCCESSFUL VALIDATION CHECK\n");
 	}
 	else {
 		// Getting the size of source matrix
@@ -315,6 +380,7 @@ int main(int argc, char *argv[]) {
 	free(rest_sizes);
 	free(proc_num_used);
 	free(matrix);
+	free(matrix_copy);
 	MPI_Finalize();
 	return 0;
 }
