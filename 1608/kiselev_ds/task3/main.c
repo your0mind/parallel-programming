@@ -16,7 +16,7 @@ void print_arr(int *arr, int size) {
 int* generate_arr(int size, int lower_value, int upper_value) {
 	int *arr = (int*)malloc(sizeof(int) * size);
 	for (int i = 0; i < size; i++)
-		arr[i] = rand() % (upper_value + 1 - lower_value) + lower_value;
+		arr[i] = (rand() % (upper_value - lower_value + 1)) + lower_value;
 	return arr;
 }
 
@@ -59,7 +59,7 @@ int max_arr(int *arr, int size) {
 
 int digit_count(int number) {
 	int count = 0;
-	for (count; number > 0; count++, number /= 10)
+	for (count; number != 0; count++, number /= 10)
 		;
 	return count;
 }
@@ -100,11 +100,17 @@ int* merge_by_digit_place(
 	return arr;
 }
 
+int compare(const void * x1, const void * x2) {
+	return (*(int*)x1 - *(int*)x2);
+}
+
 int main(int argc, char *argv[]) {
 	int proc_num, proc_rank;
 	int max_digit_count;
 	int size;
-	int *src_arr, *arr = NULL, *mate_arr;
+	int *src_arr = NULL, *full_arr = NULL, *arr = NULL, *mate_arr;
+	int *scounts = NULL, *displs = NULL;
+	double start_time, end_time;
 	MPI_Status status;
 
 	MPI_Init(&argc, &argv);
@@ -114,15 +120,21 @@ int main(int argc, char *argv[]) {
 	if (proc_rank == 0) {
 		srand(time(NULL));
 		size = atoi(argv[1]);
-		arr = generate_arr(size, atoi(argv[2]), atoi(argv[3]));
+		src_arr = generate_arr(size, atoi(argv[2]), atoi(argv[3]));
 
+		start_time = MPI_Wtime();
 		// Counting the maximum number of digits to be processed
-		int in_min = digit_count(min_arr(arr, size));
-		int in_max = digit_count(max_arr(arr, size));
+		int in_min = digit_count(min_arr(src_arr, size));
+		int in_max = digit_count(max_arr(src_arr, size));
 		max_digit_count = (in_min > in_max) ? in_min : in_max;
 
-		printf("Source array:\n");
-		print_arr(arr, size);
+		full_arr = (int*)malloc(size * sizeof(int));
+		memcpy(full_arr, src_arr, size * sizeof(int));
+
+		if (size <= 32) {
+			printf("Source array:\n");
+			print_arr(src_arr, size);
+		}
 	}
 
 	MPI_Bcast(&size, 1, MPI_INT, 0, MPI_COMM_WORLD);
@@ -133,37 +145,31 @@ int main(int argc, char *argv[]) {
 	int div_size = size / proc_num;
 	int rest_size = size - (proc_num - 1) * div_size;
 
+	if (proc_rank == 0) {
+		scounts = (int*)malloc(sizeof(int) * proc_num);
+		displs = (int*)malloc(sizeof(int) * proc_num);
+		scounts[0] = rest_size;
+		displs[0] = 0;
+		for (int i = 1; i < proc_num; i++) {
+			scounts[i] = div_size;
+			displs[i] = rest_size + (i - 1) * div_size;
+		}
+	}
+
 	for (int digit_num = 1; digit_num <= max_digit_count; digit_num++) {
-		int cur_size;
-		if (proc_rank == 0) {
-			src_arr = arr;
-			cur_size = rest_size;
-			for (int proc = 1; proc < proc_num; proc++)
-				MPI_Send(
-					&src_arr[(proc - 1) * div_size + cur_size],
-					div_size,
-					MPI_INT,
-					proc,
-					0,
-					MPI_COMM_WORLD
-				);
-			arr = (int*)malloc(sizeof(int) * cur_size);
-			memcpy(arr, src_arr, cur_size * sizeof(int));
-			free(src_arr);
-		}
-		else {
-			cur_size = div_size;
-			arr = (int*)malloc(sizeof(int) * cur_size);
-			MPI_Recv(
-				arr,
-				cur_size,
-				MPI_INT,
-				0,
-				MPI_ANY_TAG,
-				MPI_COMM_WORLD,
-				&status
-			);
-		}
+		int cur_size = (proc_rank == 0) ? rest_size : div_size;
+		arr = (int*)malloc(sizeof(int) * cur_size);
+		MPI_Scatterv(
+			full_arr,
+			scounts,
+			displs,
+			MPI_INT,
+			arr,
+			cur_size,
+			MPI_INT,
+			0,
+			MPI_COMM_WORLD
+		);
 		qsort_by_digit_place(arr, 0, cur_size - 1, digit_num);
 
 		for (int step = 1; step < proc_num; step <<= 1) {
@@ -205,12 +211,31 @@ int main(int argc, char *argv[]) {
 				free(temp);
 			}
 		}
+		if (proc_rank == 0) {
+			memcpy(full_arr, arr, size * sizeof(int));
+			free(arr);
+		}
 	}
 
 	if (proc_rank == 0) {
-		printf("Sorted array:\n");
-		print_arr(arr, size);
-		free(arr);
+		end_time = MPI_Wtime();
+
+		if (size <= 32) {
+			printf("Sorted array:\n");
+			print_arr(full_arr, size);
+		}
+
+		printf("Time: %f sec\n", end_time - start_time);
+		qsort(src_arr, size, sizeof(int), compare);
+		int successful_validation = 1;
+		for (int i = 0; i < size; i++)
+			if (src_arr[i] != full_arr[i])
+				successful_validation = 0;
+		(successful_validation)
+			? printf("SUCCESSFUL VALIDATION CHECK\n")
+			: printf("UNSUCCESSFUL VALIDATION CHECK\n");
+		free(src_arr);
+		free(full_arr);
 	}
 
 	MPI_Finalize();
