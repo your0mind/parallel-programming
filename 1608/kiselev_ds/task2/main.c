@@ -58,9 +58,61 @@ void print_matrix(double* matrix, int x, int y) {
 	}
 }
 
+void constr_row_and_subm_type(
+	MPI_Datatype *source_type,
+	int matrix_w,
+	int row_offset,
+	int subm_offset,
+	int subm_h,
+	int subm_w
+) {
+	// Creating the necessary blocklens and displacements for indexed types
+	int elems_in_type = subm_h + 1;
+	int *blocklen = (int*)malloc(sizeof(int) * elems_in_type);
+	int *displacement = (int*)malloc(sizeof(int) * elems_in_type);
+
+	for (int i = 0; i < elems_in_type; i++)
+		blocklen[i] = subm_w;
+	displacement[0] = row_offset;
+	for (int j = 0; j < subm_h; j++)
+		displacement[j + 1] = subm_offset + matrix_w * j;
+
+	MPI_Type_indexed(elems_in_type, blocklen, displacement, MPI_DOUBLE, source_type);
+	MPI_Type_commit(source_type);
+	free(blocklen);
+	free(displacement);
+}
+
+void constr_cols_and_elem_type(
+	MPI_Datatype *source_type,
+	int matrix_w,
+	int pivot_elem_offset,
+	int first_col_offset,
+	int second_col_offset,
+	int cols_h
+) {
+	int elems_in_type = cols_h * 2 + 1;
+	int *blocklen = (int*)malloc(sizeof(int) * elems_in_type);
+	int *displacement = (int*)malloc(sizeof(int) * elems_in_type);
+
+	for (int j = 0; j < elems_in_type; j++)
+		blocklen[j] = 1;
+	for (int j = 0; j < elems_in_type - 1; j += 2) {
+		int jump_size = matrix_w * (j >> 1);
+		displacement[j] = first_col_offset + jump_size;
+		displacement[j + 1] = second_col_offset + jump_size;
+	}
+	displacement[elems_in_type - 1] = pivot_elem_offset;
+
+	MPI_Type_indexed(elems_in_type, blocklen, displacement, MPI_DOUBLE, source_type);
+	MPI_Type_commit(source_type);
+	free(blocklen);
+	free(displacement);
+}
+
 int main(int argc, char *argv[]) {
 	int proc_num, proc_rank;
-	int *division_sizes, *rest_sizes, *proc_num_used;
+	int *div_sizes, *rest_sizes, *proc_num_used;
 	int *blocklen, *displacement;
 	int matrix_h, matrix_w;
 	int subm_h, subm_w;
@@ -138,18 +190,17 @@ int main(int argc, char *argv[]) {
 		// Sending matrix_size to all processes
 		MPI_Bcast(&matrix_h, 1, MPI_INT, 0, MPI_COMM_WORLD);
 
-		division_sizes = (int*)malloc(sizeof(int) * (matrix_h - 1));
+		div_sizes = (int*)malloc(sizeof(int) * (matrix_h - 1));
 		rest_sizes = (int*)malloc(sizeof(int) * (matrix_h - 1));
 		proc_num_used = (int*)malloc(sizeof(int) * (matrix_h - 1));
 
 		subm_h = matrix_h;
 		subm_w = matrix_w;
-		MPI_Datatype* indexed_types;
+		MPI_Datatype* spec_types;
 
 		// Forward elimination steps
 		diag_offset = 0;
 		for (int i = 0; i < matrix_h - 1; i++, subm_h--, subm_w--, diag_offset += matrix_w + 1) {
-			diag_offset = matrix_w * i + i;
 			// Calculate the number of processes that we will use on the current iteration
 			proc_num_used[i] = (proc_num <= subm_h - 1) ? proc_num : subm_h - 1;
 			
@@ -166,31 +217,19 @@ int main(int argc, char *argv[]) {
 				divide_vector2value(&matrix[diag_offset], subm_w, matrix[diag_offset]);
 
 			// The rest size is needed to handle the case when matrix size % proc_num != 0
-			division_sizes[i] = (subm_h - 1) / proc_num_used[i];
-			rest_sizes[i] = (subm_h - 1) - (proc_num_used[i] - 1) * division_sizes[i];
+			div_sizes[i] = (subm_h - 1) / proc_num_used[i];
+			rest_sizes[i] = (subm_h - 1) - (proc_num_used[i] - 1) * div_sizes[i];
 
 			// We will store there the mpi indexed types that we create
 			// in order to transfer the matrix parts to the processes
-			indexed_types = (MPI_Datatype*)malloc(sizeof(MPI_Datatype) * (proc_num_used[i] - 1));
+			spec_types = (MPI_Datatype*)malloc(sizeof(MPI_Datatype) * (proc_num_used[i] - 1));
 
-			// Creating the necessary blocklens and displacements for indexed types
-			elems_in_type = division_sizes[i] + 1;
-			blocklen = (int*)malloc(sizeof(int) * elems_in_type);
-			displacement = (int*)malloc(sizeof(int) * elems_in_type);
-
-			for (int j = 0; j < elems_in_type; j++)
-				blocklen[j] = subm_w;
-
-			displacement[0] = diag_offset;
+			int subm_offset = diag_offset + (rest_sizes[i] + 1) * matrix_w;
 			for (int proc = 1; proc < proc_num_used[i]; proc++) {
-				displacement[1] = displacement[0] + matrix_w * (rest_sizes[i] + 1 + (proc - 1) * division_sizes[i]);
-				for (int j = 2; j < elems_in_type; j++)
-					displacement[j] = displacement[j - 1] + matrix_w;
-
-				MPI_Type_indexed(division_sizes[i] + 1, blocklen, displacement, MPI_DOUBLE, &indexed_types[proc - 1]);
-				MPI_Type_commit(&indexed_types[proc - 1]);
+				constr_row_and_subm_type(&spec_types[proc - 1], matrix_w, diag_offset, subm_offset, div_sizes[i], subm_w);
 				// Send the matrix parts to the processes
-				MPI_Send(matrix, 1, indexed_types[proc - 1], proc, 0, MPI_COMM_WORLD);
+				MPI_Send(matrix, 1, spec_types[proc - 1], proc, 0, MPI_COMM_WORLD);
+				subm_offset += div_sizes[i] * matrix_w;
 			}
 
 			// Processing own part of matrix
@@ -204,17 +243,13 @@ int main(int argc, char *argv[]) {
 
 			// Getting updated matrix and release indexed types
 			for (int proc = 1; proc < proc_num_used[i]; proc++) {
-				MPI_Recv(matrix, 1, indexed_types[proc - 1], proc, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-				MPI_Type_free(&indexed_types[proc - 1]);
+				MPI_Recv(matrix, 1, spec_types[proc - 1], proc, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+				MPI_Type_free(&spec_types[proc - 1]);
 			}
 
-			free(blocklen);
-			free(displacement);
-			free(indexed_types);
+			free(spec_types);
 		}
-
-		matrix[diag_offset + 1] /= matrix[diag_offset];
-		matrix[diag_offset] = 1.0;
+		divide_vector2value(&matrix[diag_offset], 2, matrix[diag_offset]);
 
 		//printf("\nForward elimination's result:\n");
 		//print_matrix(matrix, matrix_w, matrix_h);
@@ -223,24 +258,20 @@ int main(int argc, char *argv[]) {
 		// Back substitution
 		pivot_elem_offset = matrix_h * matrix_w - 1;
 		for (int i = 0; i < matrix_h - 1; i++, pivot_elem_offset -= matrix_w) {
-			indexed_types = (MPI_Datatype*)malloc(sizeof(MPI_Datatype) * (proc_num_used[i] - 1));
+			spec_types = (MPI_Datatype*)malloc(sizeof(MPI_Datatype) * (proc_num_used[i] - 1));
 
-			elems_in_type = division_sizes[i] * 2 + 1;
-			blocklen = (int*)malloc(sizeof(int) * elems_in_type);
-			displacement = (int*)malloc(sizeof(int) * elems_in_type);
-			displacement[elems_in_type - 1] = pivot_elem_offset;
-
-			for (int j = 0; j < elems_in_type; j++)
-				blocklen[j] = 1;
-
+			int first_col_offset = matrix_w - i - 2;
 			for (int proc = 1; proc < proc_num_used[i]; proc++) {
-				for (int j = 0; j < elems_in_type - 1; j += 2) {
-					displacement[j] = (matrix_w - i - 2 + division_sizes[i] * matrix_w * (proc - 1)) + ((j >> 1)) * matrix_w;
-					displacement[j + 1] = displacement[j] + i + 1;
-				}
-				MPI_Type_indexed(elems_in_type, blocklen, displacement, MPI_DOUBLE, &indexed_types[proc - 1]);
-				MPI_Type_commit(&indexed_types[proc - 1]);
-				MPI_Send(matrix, 1, indexed_types[proc - 1], proc, 0, MPI_COMM_WORLD);
+				constr_cols_and_elem_type(
+					&spec_types[proc - 1],
+					matrix_w,
+					pivot_elem_offset,
+					first_col_offset,
+					first_col_offset + i + 1,
+					div_sizes[i]
+				);
+				MPI_Send(matrix, 1, spec_types[proc - 1], proc, 0, MPI_COMM_WORLD);
+				first_col_offset += div_sizes[i] * matrix_w;
 			}
 
 			int start_of_col = pivot_elem_offset - matrix_w * rest_sizes[i];
@@ -250,18 +281,16 @@ int main(int argc, char *argv[]) {
 			}
 
 			for (int proc = 1; proc < proc_num_used[i]; proc++) {
-				MPI_Recv(matrix, 1, indexed_types[proc - 1], proc, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-				MPI_Type_free(&indexed_types[proc - 1]);
+				MPI_Recv(matrix, 1, spec_types[proc - 1], proc, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
+				MPI_Type_free(&spec_types[proc - 1]);
 			}
 
-			free(blocklen);
-			free(displacement);
-			free(indexed_types);
+			free(spec_types);
 		}
 
-		//printf("\nBack substitution's result:\n");
-		//print_matrix(matrix, matrix_w, matrix_h);
-		//printf("\n\n");
+		printf("\nBack substitution's result:\n");
+		print_matrix(matrix, matrix_w, matrix_h);
+		printf("\n\n");
 
 		if (argc == 3) {
 			FILE* output_file = fopen(argv[2], "w");
@@ -295,80 +324,60 @@ int main(int argc, char *argv[]) {
 		// process during the forward elimination or back substitution
 		int actions = matrix_h - proc_rank - 1;
 
-		division_sizes = (int*)malloc(sizeof(int) * actions);
+		div_sizes = (int*)malloc(sizeof(int) * actions);
 		rest_sizes = (int*)malloc(sizeof(int) * actions);
 		proc_num_used = (int*)malloc(sizeof(int) * actions);
 
 		int diag_offset;
 		subm_h = matrix_h;
 		subm_w = matrix_w;
-		MPI_Datatype indexed_type;
+		MPI_Datatype spec_type;
 		// Forward elimination steps
 		for (int i = 0; i < actions; i++, subm_w--, subm_h--) {
 			proc_num_used[i] = (proc_num <= subm_h - 1) ? proc_num : subm_h - 1;
-			division_sizes[i] = (subm_h - 1) / proc_num_used[i];
-			rest_sizes[i] = (subm_h - 1) - (proc_num_used[i] - 1) * division_sizes[i];
+			div_sizes[i] = (subm_h - 1) / proc_num_used[i];
+			rest_sizes[i] = (subm_h - 1) - (proc_num_used[i] - 1) * div_sizes[i];
 			diag_offset = matrix_w * i + i;
 
-			elems_in_type = division_sizes[i] + 1;
-			blocklen = (int*)malloc(sizeof(int) * elems_in_type);
-			displacement = (int*)malloc(sizeof(int) * elems_in_type);
+			int subm_offset = diag_offset + matrix_w * ((rest_sizes[i] + 1) + (proc_rank - 1) * div_sizes[i]);
+			constr_row_and_subm_type(&spec_type, matrix_w, diag_offset, subm_offset, div_sizes[i], subm_w);
+			MPI_Recv(matrix, 1, spec_type, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
-			blocklen[0] = blocklen[1] = subm_w;
-			displacement[0] = diag_offset;
-			displacement[1] = displacement[0] + matrix_w * ((rest_sizes[i] + 1) + (proc_rank - 1) * division_sizes[i]);
-			for (int j = 2; j < elems_in_type; j++) {
-				displacement[j] = displacement[j - 1] + matrix_w;
-				blocklen[j] = subm_w;
-			}
-
-			MPI_Type_indexed(division_sizes[i] + 1, blocklen, displacement, MPI_DOUBLE, &indexed_type);
-			MPI_Type_commit(&indexed_type);
-			MPI_Recv(matrix, 1, indexed_type, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-
-			for (int k = 0; k < division_sizes[i]; k++) {
-				double coef = matrix[displacement[k + 1]];
+			for (int k = 0; k < div_sizes[i]; k++) {
+				double coef = matrix[subm_offset + k * matrix_w];
 				if (fabs(coef) >= EPSILON)
-					substract_vectors_with_coef(&matrix[displacement[k + 1]], &matrix[displacement[0]], subm_w, coef);
+					substract_vectors_with_coef(&matrix[subm_offset + k * matrix_w], &matrix[diag_offset], subm_w, coef);
 			}
 
-			MPI_Send(matrix, 1, indexed_type, 0, 0, MPI_COMM_WORLD);
-			MPI_Type_free(&indexed_type);
-			free(blocklen);
-			free(displacement);
+			MPI_Send(matrix, 1, spec_type, 0, 0, MPI_COMM_WORLD);
+			MPI_Type_free(&spec_type);
 		}
-
-		int pivot_elem_offset = matrix_h * matrix_w - 1;
 		// Back substitution
+		int pivot_elem_offset = matrix_h * matrix_w - 1;
 		for (int i = 0; i < actions; i++, pivot_elem_offset -= matrix_w) {
-			elems_in_type = division_sizes[i] * 2 + 1;
-			blocklen = (int*)malloc(sizeof(int) * (division_sizes[i] * 2 + 1));
-			displacement = (int*)malloc(sizeof(int) * (division_sizes[i] * 2 + 1));
-			displacement[elems_in_type - 1] = pivot_elem_offset;
+			int first_col_offset = (matrix_w - i - 2) + (proc_rank - 1) * matrix_w;
+			int second_col_offset = first_col_offset + i + 1;
+			constr_cols_and_elem_type(
+				&spec_type,
+				matrix_w,
+				pivot_elem_offset,
+				first_col_offset,
+				second_col_offset,
+				div_sizes[i]
+			);
+			MPI_Recv(matrix, 1, spec_type, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
 
-			blocklen[elems_in_type - 1] = 1;
-			for (int j = 0; j < elems_in_type - 1; j += 2) {
-				blocklen[j] = blocklen[j + 1] = 1;
-				displacement[j] = (matrix_w - i - 2 + division_sizes[i] * matrix_w * (proc_rank - 1)) + ((j >> 1)) * matrix_w;
-				displacement[j + 1] = displacement[j] + i + 1;
-			}
-			MPI_Type_indexed(elems_in_type, blocklen, displacement, MPI_DOUBLE, &indexed_type);
-			MPI_Type_commit(&indexed_type);
-			MPI_Recv(matrix, 1, indexed_type, 0, MPI_ANY_TAG, MPI_COMM_WORLD, &status);
-
-			for (int k = 0; k < elems_in_type - 1; k += 2) {
-				matrix[displacement[k + 1]] -= matrix[displacement[k]] * matrix[pivot_elem_offset];
-				//matrix[displacement[k]] = 0.0;
+			for (int k = 0; k < rest_sizes[i]; k++, second_col_offset += matrix_w) {
+				matrix[second_col_offset] -= matrix[pivot_elem_offset] * matrix[second_col_offset - (i + 1)];
+				//matrix[start_of_col - (i + 1)] = 0.0;
 			}
 
-			MPI_Send(matrix, 1, indexed_type, 0, 0, MPI_COMM_WORLD);
-			MPI_Type_free(&indexed_type);
-			free(blocklen);
-			free(displacement);
+			MPI_Send(matrix, 1, spec_type, 0, 0, MPI_COMM_WORLD);
+			MPI_Type_free(&spec_type);
 		}
 	}
 
-	free(division_sizes);
+	free(div_sizes);
 	free(rest_sizes);
 	free(proc_num_used);
 	free(matrix);
